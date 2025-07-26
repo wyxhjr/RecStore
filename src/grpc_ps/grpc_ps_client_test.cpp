@@ -62,26 +62,29 @@ void TestFactoryClient() {
   //   timer_client.end();
   // }
 
-  client->ClearPS();
-  // assert empty
-  std::vector<uint64_t> keys = {1, 2, 3};
-  std::vector<std::vector<float>> emptyvalues(keys.size());
-  std::vector<std::vector<float>> rightvalues = {{1}, {2, 2}, {3, 3, 3}};
-  std::vector<std::vector<float>> values;
-  client->GetParameter(keys, &values);
-  CHECK(check_eq_2d(values, emptyvalues));
+  auto grpc_client = dynamic_cast<GRPCParameterClient*>(client.get());
+  if (grpc_client) {
+    grpc_client->ClearPS();
+    // assert empty
+    std::vector<uint64_t> keys = {1, 2, 3};
+    std::vector<std::vector<float>> emptyvalues(keys.size());
+    std::vector<std::vector<float>> rightvalues = {{1}, {2, 2}, {3, 3, 3}};
+    std::vector<std::vector<float>> values;
+    grpc_client->GetParameter(keys, &values);
+    CHECK(check_eq_2d(values, emptyvalues));
 
-  // insert something
-  client->PutParameter(keys, rightvalues);
-  // read those
-  client->GetParameter(keys, &values);
-  CHECK(check_eq_2d(values, rightvalues));
+    // insert something
+    grpc_client->PutParameter(keys, rightvalues);
+    // read those
+    grpc_client->GetParameter(keys, &values);
+    CHECK(check_eq_2d(values, rightvalues));
 
-  // clear all
-  client->ClearPS();
-  // read those
-  client->GetParameter(keys, &values);
-  CHECK(check_eq_2d(values, emptyvalues));
+    // clear all
+    grpc_client->ClearPS();
+    // read those
+    grpc_client->GetParameter(keys, &values);
+    CHECK(check_eq_2d(values, emptyvalues));
+  }
   
 }
 

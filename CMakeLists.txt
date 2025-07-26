@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.1)
+cmake_minimum_required(VERSION 3.5)
 project(RecStore LANGUAGES CXX CUDA C)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -91,20 +91,23 @@ include("${CMAKE_CURRENT_LIST_DIR}/cmake/common.cmake")
 list(APPEND CMAKE_PREFIX_PATH "/home/xieminhui/.local/share/cmake/")
 list(APPEND CMAKE_PREFIX_PATH "/home/pod/.local/share/cmake/")
 
-list(APPEND CMAKE_PREFIX_PATH "/home/xieminhui/.local/lib/python3.10/site-packages/torch/share/cmake/Torch/")
+list(APPEND CMAKE_PREFIX_PATH "${PROJECT_SOURCE_DIR}/third_party/libtorch/libtorch/share/cmake/Torch")
+set(Torch_DIR "${PROJECT_SOURCE_DIR}/third_party/libtorch/libtorch/share/cmake/Torch")
+
+# list(APPEND CMAKE_PREFIX_PATH "/home/xieminhui/.local/lib/python3.10/site-packages/torch/share/cmake/Torch/")
 
 
-if (EXISTS "/home/pod/.local/lib/python3.10/site-packages/torch/share/cmake/Torch")
-  list(APPEND CMAKE_PREFIX_PATH "/home/pod/.local/lib/python3.10/site-packages/torch/share/cmake/Torch")
-endif()
+# if (EXISTS "/home/pod/.local/lib/python3.10/site-packages/torch/share/cmake/Torch")
+#   list(APPEND CMAKE_PREFIX_PATH "/home/pod/.local/lib/python3.10/site-packages/torch/share/cmake/Torch")
+# endif()
 
-if (EXISTS "/home/xieminhui/miniconda3/lib/python3.11/site-packages/torch/share/cmake/Torch")
-  set(Torch_DIR "/home/xieminhui/miniconda3/lib/python3.11/site-packages/torch/share/cmake/Torch")
-endif()
+# if (EXISTS "/home/xieminhui/miniconda3/lib/python3.11/site-packages/torch/share/cmake/Torch")
+#   set(Torch_DIR "/home/xieminhui/miniconda3/lib/python3.11/site-packages/torch/share/cmake/Torch")
+# endif()
 
-if (EXISTS "/home/xieminhui/anaconda3/lib/python3.1/site-packages/torch/share/cmake/Torch")
-  set(Torch_DIR "/home/xieminhui/anaconda3/lib/python3.1/site-packages/torch/share/cmake/Torch")
-endif()
+# if (EXISTS "/home/xieminhui/anaconda3/lib/python3.1/site-packages/torch/share/cmake/Torch")
+#   set(Torch_DIR "/home/xieminhui/anaconda3/lib/python3.1/site-packages/torch/share/cmake/Torch")
+# endif()
 
 
 
@@ -118,6 +121,9 @@ set(FOLLY_ROOT_DIR "${folly_DIR}")
 
 find_package(folly REQUIRED)
 find_package(gflags REQUIRED)
+
+include_directories(${PROJECT_SOURCE_DIR}/third_party/folly/folly-install-fPIC/usr/local/include)
+link_directories(${PROJECT_SOURCE_DIR}/third_party/folly/folly-install-fPIC/usr/local/lib)
 
 set(glog_DIR "${PROJECT_SOURCE_DIR}/third_party/glog/glog-install-fPIC/usr/local/lib/cmake/glog")
 find_package(glog CONFIG REQUIRED)
