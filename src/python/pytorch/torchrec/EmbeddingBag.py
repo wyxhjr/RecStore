@@ -32,29 +32,79 @@ class _RecStoreEBCFunction(Function):
         Performs the forward pass by pulling embedding vectors from RecStore.
         This implementation is designed to be torch.fx.traceable.
         """
-        # Reconstruct a KJT from the raw tensors for ID lookup.
-        # This KJT is temporary and not used in a way that breaks tracing.
+        # Check if we're in FX tracing mode
+        is_tracing = hasattr(features_values, 'node') and hasattr(features_values.node, 'op')
+        
+        if is_tracing:
+            # During FX tracing, we need to return a placeholder tensor
+            # that represents the pooled embeddings for each feature
+            # The shape should be (batch_size, num_features, embedding_dim)
+            embedding_dim = module._embedding_dims[feature_keys[0]] if feature_keys else 64
+            num_features = len(feature_keys)
+            # During tracing, we can't access device attribute, so use CPU
+            return torch.zeros(1, num_features, embedding_dim, device='cpu')
+        
+        # Normal execution path
+        if not isinstance(features_lengths, torch.Tensor):
+            lengths_tensor = torch.tensor(features_lengths, dtype=torch.int32)
+        else:
+            lengths_tensor = features_lengths.to(dtype=torch.int32, device="cpu")
+        
         features = KeyedJaggedTensor(
             keys=feature_keys,
             values=features_values,
-            lengths=features_lengths,
+            lengths=lengths_tensor,
         )
         
         ctx.save_for_backward(features_values, features_lengths)
         ctx.module = module
         ctx.feature_keys = feature_keys
 
-        pulled_embs: List[torch.Tensor] = []
+        # Get the batch size from the first feature's length
+        batch_size = len(features.lengths()) // len(feature_keys)
+        embedding_dim = module._embedding_dims[feature_keys[0]]
+        
+        # Add debug logging
+        # logging.info(f"Debug: batch_size={batch_size}, num_features={len(feature_keys)}, embedding_dim={embedding_dim}")
+        # logging.info(f"Debug: lengths shape={len(features.lengths())}, values shape={features.values().shape}")
+        
+        # Initialize output tensor: (batch_size, num_features, embedding_dim)
+        output = torch.zeros(batch_size, len(feature_keys), embedding_dim, 
+                           device=features_values.device, dtype=torch.float32)
+        
         lengths = features.lengths()
         values = features.values()
-        # Use static index-based access to avoid iterating over Proxy
-        start = 0
-        for i in range(len(feature_keys)):
-            l = lengths[i]
-            ids_to_pull = values[start:start+l]
-            pulled_embs.append(module.kv_client.pull(name=feature_keys[i], ids=ids_to_pull))
-            start = start + l
-        return torch.cat(pulled_embs, dim=0)
+        
+        # Process each feature
+        for feature_idx in range(len(feature_keys)):
+            config_name = module._config_names[feature_keys[feature_idx]]
+            
+            # Process each sample in the batch
+            for sample_idx in range(batch_size):
+                # Get the length for this sample and this feature
+                length_idx = sample_idx * len(feature_keys) + feature_idx
+                l = lengths[length_idx]
+                
+                if l > 0:
+                    # Calculate the start index for this sample and feature
+                    start_idx = 0
+                    for i in range(length_idx):
+                        start_idx += lengths[i]
+                    
+                    # Get the IDs for this sample and feature
+                    ids_to_pull = values[start_idx:start_idx + l]
+                    
+                    # Pull embeddings from RecStore
+                    embeddings = module.kv_client.pull(name=config_name, ids=ids_to_pull)
+                    
+                    # Average the embeddings for this sample and feature
+                    pooled_emb = embeddings.mean(dim=0)
+                    output[sample_idx, feature_idx] = pooled_emb
+                else:
+                    # If no embeddings, keep as zero (already initialized)
+                    pass
+        
+        return output
 
     @staticmethod
     def backward(
@@ -68,30 +118,67 @@ class _RecStoreEBCFunction(Function):
         module: "RecStoreEmbeddingBagCollection" = ctx.module
         feature_keys: List[str] = ctx.feature_keys
 
-        # Reconstruct the original KJT to get IDs and the gradient KT to get gradients.
+        # Check if we're in FX tracing mode
+        is_tracing = hasattr(features_values, 'node') and hasattr(features_values.node, 'op')
+        
+        if is_tracing:
+            # During FX tracing, we don't need to do actual gradient updates
+            # Just return None gradients for all inputs
+            return None, None, None, None
+
+        # Normal execution path
+        if not isinstance(features_lengths, torch.Tensor):
+            lengths_tensor = torch.tensor(features_lengths, dtype=torch.int32)
+        else:
+            lengths_tensor = features_lengths.to(dtype=torch.int32, device="cpu")
         features = KeyedJaggedTensor(
             keys=feature_keys,
             values=features_values,
-            lengths=features_lengths,
+            lengths=lengths_tensor,
         )
-        grad_output = KeyedTensor(
-            keys=feature_keys,
-            values=grad_output_values,
-            lengths=features_lengths, # Grads have the same length structure as inputs
-        )
-
+        
+        # grad_output_values shape is (batch_size * num_features, embedding_dim)
+        # We need to reshape it back to (batch_size, num_features, embedding_dim)
+        batch_size = len(features.lengths()) // len(feature_keys)
+        num_features = len(feature_keys)
+        embedding_dim = grad_output_values.shape[-1]
+        
+        grad_output_reshaped = grad_output_values.reshape(batch_size, num_features, embedding_dim)
+        
+        # Add debug logging
+        # logging.info(f"Debug backward: batch_size={batch_size}, num_features={num_features}, embedding_dim={embedding_dim}")
+        # logging.info(f"Debug backward: grad_output_values shape={grad_output_values.shape}, grad_output_reshaped shape={grad_output_reshaped.shape}")
+        
         lengths = features.lengths()
         values = features.values()
-        grad_values = grad_output.values()
-        start = 0
-        grad_start = 0
-        for i in range(len(feature_keys)):
-            l = lengths[i]
-            ids_to_update = values[start:start+l]
-            grads = grad_values[grad_start:grad_start+l]
-            module.kv_client.update(name=feature_keys[i], ids=ids_to_update, grads=grads.contiguous())
-            start = start + l
-            grad_start = grad_start + l
+        
+        # Process each feature
+        for feature_idx in range(len(feature_keys)):
+            config_name = module._config_names[feature_keys[feature_idx]]
+            
+            # Process each sample in the batch
+            for sample_idx in range(batch_size):
+                # Get the length for this sample and this feature
+                length_idx = sample_idx * len(feature_keys) + feature_idx
+                l = lengths[length_idx]
+                
+                if l > 0:
+                    # Calculate the start index for this sample and feature
+                    start_idx = 0
+                    for i in range(length_idx):
+                        start_idx += lengths[i]
+                    
+                    # Get the IDs for this sample and feature
+                    ids_to_update = values[start_idx:start_idx + l]
+                    
+                    # Get the gradient for this sample and feature
+                    grad = grad_output_reshaped[sample_idx, feature_idx]
+                    
+                    # Expand gradient to match the number of embeddings
+                    grads = grad.unsqueeze(0).expand(l, -1)
+                    
+                    # Update embeddings in RecStore
+                    module.kv_client.update(name=config_name, ids=ids_to_update, grads=grads.contiguous())
 
         # Return gradients for inputs to forward: module, feature_keys, features_values, features_lengths
         return None, None, None, None
@@ -124,8 +211,15 @@ class RecStoreEmbeddingBagCollection(torch.nn.Module):
         
         # Store feature names and embedding dimensions in a static, ordered way.
         # This is crucial for FX tracing, as we will iterate over these static lists.
-        self.feature_keys: List[str] = [c.name for c in self._embedding_bag_configs]
-        self._embedding_dims: Dict[str, int] = {c.name: c.embedding_dim for c in self._embedding_bag_configs}
+        # We need to use feature_names instead of name to match what SparseArch expects
+        self.feature_keys: List[str] = []
+        self._embedding_dims: Dict[str, int] = {}
+        self._config_names: Dict[str, str] = {}  # Map feature_name to config.name
+        for c in self._embedding_bag_configs:
+            for feature_name in c.feature_names:
+                self.feature_keys.append(feature_name)
+                self._embedding_dims[feature_name] = c.embedding_dim
+                self._config_names[feature_name] = c.name
 
         logging.info("Initializing RecStoreEmbeddingBagCollection...")
         for config in self._embedding_bag_configs:
@@ -161,23 +255,29 @@ class RecStoreEmbeddingBagCollection(torch.nn.Module):
         """
         Performs the embedding lookup in a way that is compatible with torch.fx.
         """
-        # Decompose the KJT into its constituent tensors before passing to the
-        # autograd.Function. This is a key pattern for making complex objects
-        # traceable, as fx traces operations on tensors.
+        values = features.values().contiguous()
+        lengths = features.lengths().contiguous()
+
         pooled_embs_values = _RecStoreEBCFunction.apply(
             self,
             self.feature_keys,
-            features.values(),
-            features.lengths(),
+            values,
+            lengths,
         )
 
-        # Reconstruct the final KeyedTensor, which is the expected output format
-        # for the sparse architecture of the DLRM.
-        # Only pass supported arguments to KeyedTensor
+        # pooled_embs_values shape is (batch_size, num_features, embedding_dim)
+        # We need to reshape it to (batch_size * num_features, embedding_dim) for KeyedTensor
+        batch_size, num_features, embedding_dim = pooled_embs_values.shape
+        reshaped_values = pooled_embs_values.reshape(-1, embedding_dim)
+        
+        # Create length_per_key where each feature has batch_size length
+        length_per_key = [batch_size] * num_features
+        
         return KeyedTensor(
             keys=self.feature_keys,
-            values=pooled_embs_values,
-            length_per_key=features.lengths(),
+            values=reshaped_values,
+            length_per_key=length_per_key,
+            key_dim=0,  # Split along dimension 0
         )
 
     def __repr__(self) -> str:
