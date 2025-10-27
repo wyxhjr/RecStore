@@ -35,41 +35,118 @@ ToRecTensor(const torch::Tensor& tensor, base::DataType dtype) {
 }
 
 torch::Tensor emb_read_torch(const torch::Tensor& keys, int64_t embedding_dim) {
+  RECSTORE_LOG(0,
+               "[DEBUG][op_torch] emb_read_torch: keys shape="
+                   << keys.sizes() << ", dtype=" << keys.dtype()
+                   << ", data_ptr=" << keys.data_ptr());
+  RECSTORE_LOG(
+      0, "[DEBUG][op_torch] emb_read_torch: embedding_dim=" << embedding_dim);
+  torch::Tensor cpu_keys = keys;
+  if (keys.is_cuda()) {
+    RECSTORE_LOG(2, "[INFO] emb_read_torch: copying GPU keys to CPU");
+    cpu_keys = keys.cpu();
+  }
+  if (cpu_keys.size(0) > 0) {
+    auto cpu_keys_acc = cpu_keys.accessor<int64_t, 1>();
+    std::ostringstream oss;
+    oss << "[DEBUG][op_torch] emb_read_torch: keys start with: ";
+    for (int i = 0; i < std::min((int64_t)10, keys.size(0)); ++i)
+      oss << cpu_keys_acc[i] << ", ";
+    RECSTORE_LOG(0, oss.str());
+  }
   RECSTORE_LOG(2,
                "[INFO] emb_read_torch called: keys shape="
-                   << keys.sizes() << ", dtype=" << keys.dtype()
+                   << cpu_keys.sizes() << ", dtype=" << cpu_keys.dtype()
                    << ", embedding_dim=" << embedding_dim);
-  TORCH_CHECK(keys.dim() == 1, "Keys tensor must be 1-dimensional");
-  TORCH_CHECK(keys.scalar_type() == torch::kInt64,
+  TORCH_CHECK(cpu_keys.dim() == 1, "Keys tensor must be 1-dimensional");
+  TORCH_CHECK(cpu_keys.scalar_type() == torch::kInt64,
               "Keys tensor must have dtype int64");
-  TORCH_CHECK(keys.is_contiguous(), "Keys tensor must be contiguous");
+  TORCH_CHECK(cpu_keys.is_contiguous(), "Keys tensor must be contiguous");
   TORCH_CHECK(embedding_dim > 0, "Embedding dimension must be positive");
 
-  const int64_t num_keys = keys.size(0);
+  const int64_t num_keys = cpu_keys.size(0);
   if (num_keys == 0) {
     RECSTORE_LOG(3, "[DEBUG] emb_read_torch: num_keys==0, returning empty");
     return torch::empty(
-        {0, embedding_dim}, keys.options().dtype(torch::kFloat32));
+        {0, embedding_dim}, cpu_keys.options().dtype(torch::kFloat32));
   }
 
   auto op = GetKVClientOp();
 
   auto values = torch::empty(
       {num_keys, embedding_dim}, keys.options().dtype(torch::kFloat32));
-  TORCH_CHECK(values.is_contiguous(),
+  torch::Tensor cpu_values = values;
+  if (values.is_cuda()) {
+    RECSTORE_LOG(
+        2,
+        "[INFO] emb_read_torch: copying GPU values to CPU for C++ operation");
+    cpu_values = values.cpu();
+  }
+  TORCH_CHECK(cpu_values.is_contiguous(),
               "Internal error: Created values tensor is not contiguous");
+  RECSTORE_LOG(0,
+               "[DEBUG][op_torch] emb_read_torch: values shape="
+                   << cpu_values.sizes() << ", dtype=" << cpu_values.dtype()
+                   << ", data_ptr=" << cpu_values.data_ptr());
+  if (cpu_values.size(0) > 0) {
+    auto values_acc = cpu_values.accessor<float, 2>();
+    std::ostringstream oss;
+    oss << "[DEBUG][op_torch] emb_read_torch: values start with: ";
+    for (int i = 0; i < std::min((int64_t)10, cpu_values.size(0)); ++i) {
+      oss << "[";
+      for (int j = 0; j < std::min((int64_t)10, cpu_values.size(1)); ++j) {
+        oss << values_acc[i][j] << ", ";
+      }
+      oss << "] ";
+    }
+    RECSTORE_LOG(0, oss.str());
+  }
 
-  base::RecTensor rec_keys   = ToRecTensor(keys, base::DataType::UINT64);
-  base::RecTensor rec_values = ToRecTensor(values, base::DataType::FLOAT32);
+  base::RecTensor rec_keys   = ToRecTensor(cpu_keys, base::DataType::UINT64);
+  base::RecTensor rec_values = ToRecTensor(cpu_values, base::DataType::FLOAT32);
 
   RECSTORE_LOG(3, "[DEBUG] emb_read_torch: calling op->EmbRead");
   op->EmbRead(rec_keys, rec_values);
   RECSTORE_LOG(3, "[DEBUG] emb_read_torch: EmbRead done");
 
+  if (values.is_cuda()) {
+    RECSTORE_LOG(2, "[INFO] emb_read_torch: copying results back to GPU");
+    values.copy_(cpu_values);
+  }
+
   return values;
 }
 
 void emb_update_torch(const torch::Tensor& keys, const torch::Tensor& grads) {
+  RECSTORE_LOG(0,
+               "[DEBUG][op_torch] emb_update_torch: keys shape="
+                   << keys.sizes() << ", dtype=" << keys.dtype()
+                   << ", data_ptr=" << keys.data_ptr());
+  RECSTORE_LOG(0,
+               "[DEBUG][op_torch] emb_update_torch: grads shape="
+                   << grads.sizes() << ", dtype=" << grads.dtype()
+                   << ", data_ptr=" << grads.data_ptr());
+  if (keys.size(0) > 0) {
+    auto keys_acc = keys.accessor<int64_t, 1>();
+    std::ostringstream oss;
+    oss << "[DEBUG][op_torch] emb_update_torch: keys start with: ";
+    for (int i = 0; i < std::min((int64_t)10, keys.size(0)); ++i)
+      oss << keys_acc[i] << ", ";
+    RECSTORE_LOG(0, oss.str());
+  }
+  if (grads.size(0) > 0) {
+    auto grads_acc = grads.accessor<float, 2>();
+    std::ostringstream oss;
+    oss << "[DEBUG][op_torch] emb_update_torch: grads start with: ";
+    for (int i = 0; i < std::min((int64_t)10, grads.size(0)); ++i) {
+      oss << "[";
+      for (int j = 0; j < std::min((int64_t)10, grads.size(1)); ++j) {
+        oss << grads_acc[i][j] << ", ";
+      }
+      oss << "] ";
+    }
+    RECSTORE_LOG(0, oss.str());
+  }
   RECSTORE_LOG(2,
                "[INFO] emb_update_torch called: keys shape="
                    << keys.sizes() << ", grads shape=" << grads.sizes());
@@ -91,8 +168,19 @@ void emb_update_torch(const torch::Tensor& keys, const torch::Tensor& grads) {
 
   auto op = GetKVClientOp();
 
-  base::RecTensor rec_keys  = ToRecTensor(keys, base::DataType::UINT64);
-  base::RecTensor rec_grads = ToRecTensor(grads, base::DataType::FLOAT32);
+  torch::Tensor cpu_keys  = keys;
+  torch::Tensor cpu_grads = grads;
+  if (keys.is_cuda()) {
+    RECSTORE_LOG(2, "[INFO] emb_update_torch: copying GPU keys to CPU");
+    cpu_keys = keys.cpu();
+  }
+  if (grads.is_cuda()) {
+    RECSTORE_LOG(2, "[INFO] emb_update_torch: copying GPU grads to CPU");
+    cpu_grads = grads.cpu();
+  }
+
+  base::RecTensor rec_keys  = ToRecTensor(cpu_keys, base::DataType::UINT64);
+  base::RecTensor rec_grads = ToRecTensor(cpu_grads, base::DataType::FLOAT32);
 
   RECSTORE_LOG(3, "[DEBUG] emb_update_torch: calling op->EmbUpdate");
   op->EmbUpdate(rec_keys, rec_grads);
@@ -100,6 +188,35 @@ void emb_update_torch(const torch::Tensor& keys, const torch::Tensor& grads) {
 }
 
 void emb_write_torch(const torch::Tensor& keys, const torch::Tensor& values) {
+  RECSTORE_LOG(0,
+               "[DEBUG][op_torch] emb_write_torch: keys shape="
+                   << keys.sizes() << ", dtype=" << keys.dtype()
+                   << ", data_ptr=" << keys.data_ptr());
+  RECSTORE_LOG(0,
+               "[DEBUG][op_torch] emb_write_torch: values shape="
+                   << values.sizes() << ", dtype=" << values.dtype()
+                   << ", data_ptr=" << values.data_ptr());
+  if (keys.size(0) > 0) {
+    auto keys_acc = keys.accessor<int64_t, 1>();
+    std::ostringstream oss;
+    oss << "[DEBUG][op_torch] emb_write_torch: keys start with: ";
+    for (int i = 0; i < std::min((int64_t)10, keys.size(0)); ++i)
+      oss << keys_acc[i] << ", ";
+    RECSTORE_LOG(0, oss.str());
+  }
+  if (values.size(0) > 0) {
+    auto values_acc = values.accessor<float, 2>();
+    std::ostringstream oss;
+    oss << "[DEBUG][op_torch] emb_write_torch: values start with: ";
+    for (int i = 0; i < std::min((int64_t)10, values.size(0)); ++i) {
+      oss << "[";
+      for (int j = 0; j < std::min((int64_t)10, values.size(1)); ++j) {
+        oss << values_acc[i][j] << ", ";
+      }
+      oss << "] ";
+    }
+    RECSTORE_LOG(0, oss.str());
+  }
   RECSTORE_LOG(2,
                "[INFO] emb_write_torch called: keys shape="
                    << keys.sizes() << ", values shape=" << values.sizes());
@@ -121,8 +238,19 @@ void emb_write_torch(const torch::Tensor& keys, const torch::Tensor& values) {
 
   auto op = GetKVClientOp();
 
-  base::RecTensor rec_keys   = ToRecTensor(keys, base::DataType::UINT64);
-  base::RecTensor rec_values = ToRecTensor(values, base::DataType::FLOAT32);
+  torch::Tensor cpu_keys   = keys;
+  torch::Tensor cpu_values = values;
+  if (keys.is_cuda()) {
+    RECSTORE_LOG(2, "[INFO] emb_write_torch: copying GPU keys to CPU");
+    cpu_keys = keys.cpu();
+  }
+  if (values.is_cuda()) {
+    RECSTORE_LOG(2, "[INFO] emb_write_torch: copying GPU values to CPU");
+    cpu_values = values.cpu();
+  }
+
+  base::RecTensor rec_keys   = ToRecTensor(cpu_keys, base::DataType::UINT64);
+  base::RecTensor rec_values = ToRecTensor(cpu_values, base::DataType::FLOAT32);
 
   RECSTORE_LOG(3, "[DEBUG] emb_write_torch: calling op->EmbWrite");
   op->EmbWrite(rec_keys, rec_values);

@@ -111,6 +111,33 @@ KVClientOp::KVClientOp() : learning_rate_(0.01f), embedding_dim_(-1) {
 BasePSClient* KVClientOp::ps_client_ = nullptr;
 
 void KVClientOp::EmbRead(const RecTensor& keys, RecTensor& values) {
+  RECSTORE_LOG(0,
+               "[DEBUG][op.cc] EmbRead: keys.shape="
+                   << keys.shape(0) << ", values.shape=[" << values.shape(0)
+                   << ", " << values.shape(1) << "]");
+  RECSTORE_LOG(0,
+               "[DEBUG][op.cc] EmbRead: keys.data="
+                   << keys.data_as<uint64_t>()
+                   << ", values.data=" << values.data_as<float>());
+  if (keys.shape(0) > 0) {
+    std::ostringstream oss;
+    oss << "[DEBUG][op.cc] EmbRead: keys start with: ";
+    for (int i = 0; i < std::min((int64_t)10, keys.shape(0)); ++i)
+      oss << keys.data_as<uint64_t>()[i] << ", ";
+    RECSTORE_LOG(0, oss.str());
+  }
+  if (values.shape(0) > 0) {
+    std::ostringstream oss;
+    oss << "[DEBUG][op.cc] EmbRead: values start with: ";
+    for (int i = 0; i < std::min((int64_t)10, values.shape(0)); ++i) {
+      oss << "[";
+      for (int j = 0; j < std::min((int64_t)10, values.shape(1)); ++j) {
+        oss << values.data_as<float>()[i * values.shape(1) + j] << ", ";
+      }
+      oss << "] ";
+    }
+    RECSTORE_LOG(0, oss.str());
+  }
   validate_keys(keys);
   validate_embeddings(values, "Values");
 
